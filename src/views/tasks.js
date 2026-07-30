@@ -2,6 +2,7 @@ import { supabase } from '../supabase.js'
 import { Icon } from '../icons.js'
 import { modal, confirmDialog, toast } from '../router.js'
 import { escape, initials, avatarColor } from './dashboard.js'
+import { getCurrentUser } from './login.js'
 
 const COLUMNS = [
   { id: 'todo', label: 'À faire' },
@@ -10,8 +11,23 @@ const COLUMNS = [
   { id: 'done', label: 'Terminé' },
 ]
 
+let filterMine = false
+
+function myFullName(user) {
+  if (!user) return null
+  // user.name is the first name (e.g. "Julien"); match team member by first name
+  return user.name
+}
+
+function isAssignedToMe(task, user) {
+  if (!user) return false
+  const assignee = (task.assignee || '').toLowerCase()
+  return assignee.startsWith(user.name.toLowerCase() + ' ') || assignee === user.name.toLowerCase()
+}
+
 export async function renderTasks(content) {
   content.innerHTML = `<div class="spinner"></div>`
+  const user = getCurrentUser()
   const [{ data: tasks }, { data: projects }, { data: team }] = await Promise.all([
     supabase.from('tasks').select('*').order('order', { ascending: true }),
     supabase.from('projects').select('id,name'),
@@ -21,14 +37,23 @@ export async function renderTasks(content) {
   const projectMap = Object.fromEntries((projects || []).map((p) => [p.id, p.name]))
   const teamMap = Object.fromEntries((team || []).map((m) => [`${m.first_name} ${m.last_name}`, m]))
 
+  const visibleTasks = filterMine && user ? (tasks || []).filter((t) => isAssignedToMe(t, user)) : (tasks || [])
+  const myCount = user ? (tasks || []).filter((t) => isAssignedToMe(t, user)).length : 0
+
   content.innerHTML = `
     <div class="page-head">
-      <div><div class="page-title">Tâches</div><div class="page-sub">Glissez-déposez pour organiser</div></div>
-      <button class="btn btn-primary" id="add-task">${Icon.plus(16)} Nouvelle tâche</button>
+      <div><div class="page-title">Tâches</div><div class="page-sub">${filterMine ? 'Tâches qui vous sont assignées' : 'Toutes les tâches'} · Glissez-déposez pour organiser</div></div>
+      <div style="display:flex;gap:10px;align-items:center">
+        <div class="seg-toggle">
+          <button class="seg-btn ${!filterMine ? 'active' : ''}" data-filter="all">Toutes (${(tasks || []).length})</button>
+          <button class="seg-btn ${filterMine ? 'active' : ''}" data-filter="mine">Mes tâches (${myCount})</button>
+        </div>
+        <button class="btn btn-primary" id="add-task">${Icon.plus(16)} Nouvelle tâche</button>
+      </div>
     </div>
     <div class="kanban" id="kanban">
       ${COLUMNS.map((col) => {
-        const items = (tasks || []).filter((t) => t.status === col.id)
+        const items = visibleTasks.filter((t) => t.status === col.id)
         return `
           <div class="kanban-col">
             <div class="kanban-col-head">
@@ -36,24 +61,23 @@ export async function renderTasks(content) {
               <span class="kanban-col-count">${items.length}</span>
             </div>
             <div class="kanban-col-body" data-status="${col.id}">
-              ${items.map((t) => taskCard(t, projectMap, teamMap)).join('')}
+              ${items.map((t) => taskCard(t, projectMap, teamMap, user)).join('')}
             </div>
             <button class="kanban-add" data-add="${col.id}">${Icon.plus(14)} Ajouter</button>
           </div>`
       }).join('')}
     </div>`
 
-  // Add buttons
-  content.querySelectorAll('[data-add]').forEach((b) => b.onclick = () => openTaskForm(content, { status: b.dataset.add }))
-  document.getElementById('add-task').onclick = () => openTaskForm(content, {})
+  content.querySelectorAll('[data-filter]').forEach((b) => b.onclick = () => { filterMine = b.dataset.filter === 'mine'; renderTasks(content) })
+  content.querySelectorAll('[data-add]').forEach((b) => b.onclick = () => openTaskForm(content, { status: b.dataset.add }, user))
+  document.getElementById('add-task').onclick = () => openTaskForm(content, {}, user)
 
-  // Drag and drop
   let dragId = null
   content.querySelectorAll('.kanban-card').forEach((card) => {
     card.draggable = true
     card.addEventListener('dragstart', (e) => { dragId = card.dataset.id; card.classList.add('dragging'); e.dataTransfer.effectAllowed = 'move' })
     card.addEventListener('dragend', () => { card.classList.remove('dragging'); dragId = null })
-    card.querySelector('.edit-btn').onclick = (e) => { e.stopPropagation(); openTaskForm(content, tasks.find((t) => t.id === card.dataset.id)) }
+    card.querySelector('.edit-btn').onclick = (e) => { e.stopPropagation(); openTaskForm(content, tasks.find((t) => t.id === card.dataset.id), user) }
     card.querySelector('.del-btn').onclick = async (e) => {
       e.stopPropagation()
       if (await confirmDialog('Supprimer cette tâche ?')) {
@@ -78,22 +102,24 @@ export async function renderTasks(content) {
   })
 }
 
-function taskCard(t, projectMap, teamMap) {
+function taskCard(t, projectMap, teamMap, user) {
   const m = teamMap[t.assignee]
+  const mine = user && isAssignedToMe(t, user)
   return `
-    <div class="kanban-card" data-id="${t.id}">
+    <div class="kanban-card${mine ? ' mine' : ''}" data-id="${t.id}">
       <div class="kanban-card-title">${escape(t.title)}</div>
       ${t.description ? `<div style="font-size:12px;color:var(--text-3);margin-bottom:6px">${escape(t.description.slice(0, 80))}</div>` : ''}
       <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:4px">
         <span class="tag"><span class="priority-dot priority-${t.priority}" style="margin-right:5px"></span>${t.priority}</span>
         ${t.project_id ? `<span class="tag">${escape(projectMap[t.project_id] || 'Projet')}</span>` : ''}
+        ${mine ? '<span class="tag" style="background:var(--primary-soft);color:var(--primary)">Moi</span>' : ''}
       </div>
       <div class="kanban-card-meta">
         <div class="kanban-card-assignee">
           ${m ? `<div class="avatar sm" style="background:${avatarColor(t.assignee)}">${initials(m.first_name, m.last_name)}</div>` : ''}
           ${escape(t.assignee || 'Non assigné')}
         </div>
-        <div style="display:flex;gap:4px">
+        <div style="display:flex;gap:4px;align-items:center">
           ${t.due_date ? `<span style="font-size:11px;color:var(--text-3)">${new Date(t.due_date).toLocaleDateString('fr-FR')}</span>` : ''}
           <button class="btn btn-ghost btn-sm btn-icon edit-btn">${Icon.edit(13)}</button>
           <button class="btn btn-ghost btn-sm btn-icon del-btn">${Icon.trash(13)}</button>
@@ -102,9 +128,16 @@ function taskCard(t, projectMap, teamMap) {
     </div>`
 }
 
-async function openTaskForm(content, task) {
+async function openTaskForm(content, task, user) {
   const { data: projects } = await supabase.from('projects').select('id,name')
   const { data: team } = await supabase.from('team_members').select('*')
+
+  // Pre-select the current user as assignee for new tasks
+  let defaultAssignee = task.assignee || ''
+  if (!task.id && user) {
+    const me = (team || []).find((m) => m.first_name.toLowerCase() === user.name.toLowerCase())
+    if (me) defaultAssignee = `${me.first_name} ${me.last_name}`
+  }
 
   await modal(task.id ? 'Modifier la tâche' : 'Nouvelle tâche', (body) => {
     body.innerHTML = `
@@ -115,12 +148,12 @@ async function openTaskForm(content, task) {
           ${COLUMNS.map((c) => `<option value="${c.id}" ${task.status === c.id ? 'selected' : ''}>${c.label}</option>`).join('')}
         </select></div>
         <div class="field"><label>Priorité</label><select id="f-priority">
-          ${['low', 'medium', 'high'].map((p) => `<option value="${p}" ${task.priority === p ? 'selected' : ''}>${p}</option>`).join('')}
+          ${['low', 'medium', 'high'].map((p) => `<option value="${p}" ${task.priority === p ? 'selected' : ''}>${p === 'low' ? 'Basse' : p === 'medium' ? 'Moyenne' : 'Haute'}</option>`).join('')}
         </select></div>
       </div>
       <div class="form-row">
         <div class="field"><label>Projet</label><select id="f-project"><option value="">—</option>${(projects || []).map((p) => `<option value="${p.id}" ${task.project_id === p.id ? 'selected' : ''}>${escape(p.name)}</option>`).join('')}</select></div>
-        <div class="field"><label>Responsable</label><select id="f-assignee"><option value="">—</option>${(team || []).map((m) => `<option value="${m.first_name} ${m.last_name}" ${task.assignee === `${m.first_name} ${m.last_name}` ? 'selected' : ''}>${escape(m.first_name)} ${escape(m.last_name)}</option>`).join('')}</select></div>
+        <div class="field"><label>Responsable</label><select id="f-assignee"><option value="">—</option>${(team || []).map((m) => `<option value="${m.first_name} ${m.last_name}" ${defaultAssignee === `${m.first_name} ${m.last_name}` ? 'selected' : ''}>${escape(m.first_name)} ${escape(m.last_name)}</option>`).join('')}</select></div>
       </div>
       <div class="field"><label>Date limite</label><input type="date" id="f-due" value="${task.due_date || ''}"></div>`
   }, async () => {

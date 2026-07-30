@@ -1,6 +1,7 @@
 import { supabase } from '../supabase.js'
 import { Icon } from '../icons.js'
 import { toast } from '../router.js'
+import { getCurrentUser } from './login.js'
 
 const fmt = (n) => new Intl.NumberFormat('fr-FR', { style: 'currency', currency: 'EUR', maximumFractionDigits: 0 }).format(n || 0)
 
@@ -19,6 +20,11 @@ export async function renderDashboard(content) {
   const p = projects.data || []
   const d = deals.data || []
   const x = tx.data || []
+  const user = getCurrentUser()
+
+  const myTasks = user ? t.filter((k) => (k.assignee || '').toLowerCase().startsWith(user.name.toLowerCase())) : []
+  const myDone = myTasks.filter((k) => k.status === 'done').length
+  const myActive = myTasks.filter((k) => k.status !== 'done').length
 
   const done = t.filter((k) => k.status === 'done').length
   const todo = t.filter((k) => k.status === 'todo').length
@@ -60,7 +66,7 @@ export async function renderDashboard(content) {
     <div class="page-head">
       <div>
         <div class="page-title">Tableau de bord</div>
-        <div class="page-sub">Vue d'ensemble de votre entreprise</div>
+        <div class="page-sub">Vue d'ensemble · Bienvenue ${escape(user ? user.name : '')}</div>
       </div>
       <div class="badge badge-neutral">${new Date().toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long' })}</div>
     </div>
@@ -105,6 +111,18 @@ export async function renderDashboard(content) {
     </div>
 
     <div class="grid grid-3">
+      <div class="card">
+        <div class="card-head"><div class="card-title">Mes tâches</div><span class="badge badge-primary">${myActive} active${myActive > 1 ? 's' : ''}</span></div>
+        <div style="padding:8px">
+          ${myTasks.filter((k) => k.status !== 'done').slice(0, 6).map((k) => `
+            <div style="padding:10px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:8px">
+              <span class="priority-dot priority-${k.priority || 'medium'}"></span>
+              <div style="flex:1;font-size:13px;font-weight:500">${escape(k.title)}</div>
+              ${k.due_date ? `<div style="font-size:11px;color:var(--text-3)">${new Date(k.due_date).toLocaleDateString('fr-FR')}</div>` : ''}
+            </div>`).join('') || '<div class="empty">Aucune tâche assignée</div>'}
+        </div>
+      </div>
+
       <div class="card">
         <div class="card-head"><div class="card-title">Projets en cours</div><span class="badge badge-primary">${p.length}</span></div>
         <div style="padding:8px">
