@@ -9,6 +9,8 @@ export async function renderProjects(content) {
   content.innerHTML = `<div class="spinner"></div>`
   const { data: projects } = await supabase.from('projects').select('*').order('created_at', { ascending: false })
   const { data: tasks } = await supabase.from('tasks').select('id,project_id,status')
+  const { data: clients } = await supabase.from('clients').select('id,name,logo_color')
+  const clientMap = Object.fromEntries((clients || []).map((c) => [c.id, c]))
 
   content.innerHTML = `
     <div class="page-head">
@@ -16,7 +18,7 @@ export async function renderProjects(content) {
       <button class="btn btn-primary" id="add-proj">${Icon.plus(16)} Nouveau projet</button>
     </div>
     <div class="grid grid-3" id="proj-grid">
-      ${(projects || []).map((p) => projectCard(p, tasks || [])).join('') || '<div class="empty">Aucun projet. Créez-en un !</div>'}
+      ${(projects || []).map((p) => projectCard(p, tasks || [], clientMap)).join('') || '<div class="empty">Aucun projet. Créez-en un !</div>'}
     </div>`
 
   document.getElementById('add-proj').onclick = () => openForm(content)
@@ -30,11 +32,15 @@ export async function renderProjects(content) {
   })
 }
 
-function projectCard(p, tasks) {
+function projectCard(p, tasks, clientMap) {
   const projTasks = tasks.filter((t) => t.project_id === p.id)
   const done = projTasks.filter((t) => t.status === 'done').length
   const total = projTasks.length
   const pct = total ? Math.round((done / total) * 100) : (p.progress || 0)
+  const client = clientMap[p.client_id]
+  const clientBadge = client
+    ? `<span class="badge" style="background:${client.logo_color}22;color:${client.logo_color}">${Icon.users(12)} ${escape(client.name)}</span>`
+    : `<span class="badge badge-neutral">${escape(p.client || '—')}</span>`
   return `
     <div class="card card-pad">
       <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:10px">
@@ -49,7 +55,7 @@ function projectCard(p, tasks) {
       </div>
       <div style="font-size:13px;color:var(--text-3);margin-bottom:12px;min-height:38px">${escape(p.description || 'Aucune description')}</div>
       <div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap">
-        <span class="badge badge-neutral">${escape(p.client || '—')}</span>
+        ${clientBadge}
         <span class="badge ${p.status === 'active' ? 'badge-success' : p.status === 'completed' ? 'badge-primary' : 'badge-warning'}">${p.status}</span>
       </div>
       <div style="display:flex;justify-content:space-between;font-size:12px;color:var(--text-3);margin-bottom:6px">
@@ -64,12 +70,13 @@ function projectCard(p, tasks) {
 }
 
 async function openForm(content, project = {}) {
+  const { data: clients } = await supabase.from('clients').select('id,name').order('name', { ascending: true })
   await modal(project.id ? 'Modifier le projet' : 'Nouveau projet', (body) => {
     body.innerHTML = `
       <div class="field"><label>Nom</label><input id="f-name" value="${escape(project.name || '')}"></div>
       <div class="field"><label>Description</label><textarea id="f-desc">${escape(project.description || '')}</textarea></div>
       <div class="form-row">
-        <div class="field"><label>Client</label><input id="f-client" value="${escape(project.client || '')}"></div>
+        <div class="field"><label>Client</label><select id="f-client"><option value="">—</option>${(clients || []).map((c) => `<option value="${c.id}" ${project.client_id === c.id ? 'selected' : ''}>${escape(c.name)}</option>`).join('')}</select></div>
         <div class="field"><label>Budget (€)</label><input type="number" id="f-budget" value="${project.budget || 0}"></div>
       </div>
       <div class="form-row">
@@ -84,7 +91,7 @@ async function openForm(content, project = {}) {
     const payload = {
       name: document.getElementById('f-name').value.trim(),
       description: document.getElementById('f-desc').value.trim(),
-      client: document.getElementById('f-client').value.trim(),
+      client_id: document.getElementById('f-client').value || null,
       budget: Number(document.getElementById('f-budget').value) || 0,
       status: document.getElementById('f-status').value,
       color: document.getElementById('f-color').value,

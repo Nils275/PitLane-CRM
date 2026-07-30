@@ -28,14 +28,16 @@ function isAssignedToMe(task, user) {
 export async function renderTasks(content) {
   content.innerHTML = `<div class="spinner"></div>`
   const user = getCurrentUser()
-  const [{ data: tasks }, { data: projects }, { data: team }] = await Promise.all([
+  const [{ data: tasks }, { data: projects }, { data: team }, { data: clients }] = await Promise.all([
     supabase.from('tasks').select('*').order('order', { ascending: true }),
     supabase.from('projects').select('id,name'),
     supabase.from('team_members').select('*'),
+    supabase.from('clients').select('id,name,logo_color'),
   ])
 
   const projectMap = Object.fromEntries((projects || []).map((p) => [p.id, p.name]))
   const teamMap = Object.fromEntries((team || []).map((m) => [`${m.first_name} ${m.last_name}`, m]))
+  const clientMap = Object.fromEntries((clients || []).map((c) => [c.id, c]))
 
   const visibleTasks = filterMine && user ? (tasks || []).filter((t) => isAssignedToMe(t, user)) : (tasks || [])
   const myCount = user ? (tasks || []).filter((t) => isAssignedToMe(t, user)).length : 0
@@ -61,7 +63,7 @@ export async function renderTasks(content) {
               <span class="kanban-col-count">${items.length}</span>
             </div>
             <div class="kanban-col-body" data-status="${col.id}">
-              ${items.map((t) => taskCard(t, projectMap, teamMap, user)).join('')}
+              ${items.map((t) => taskCard(t, projectMap, teamMap, user, clientMap)).join('')}
             </div>
             <button class="kanban-add" data-add="${col.id}">${Icon.plus(14)} Ajouter</button>
           </div>`
@@ -102,9 +104,10 @@ export async function renderTasks(content) {
   })
 }
 
-function taskCard(t, projectMap, teamMap, user) {
+function taskCard(t, projectMap, teamMap, user, clientMap) {
   const m = teamMap[t.assignee]
   const mine = user && isAssignedToMe(t, user)
+  const client = clientMap[t.client_id]
   return `
     <div class="kanban-card${mine ? ' mine' : ''}" data-id="${t.id}">
       <div class="kanban-card-title">${escape(t.title)}</div>
@@ -112,6 +115,7 @@ function taskCard(t, projectMap, teamMap, user) {
       <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:4px">
         <span class="tag"><span class="priority-dot priority-${t.priority}" style="margin-right:5px"></span>${t.priority}</span>
         ${t.project_id ? `<span class="tag">${escape(projectMap[t.project_id] || 'Projet')}</span>` : ''}
+        ${client ? `<span class="tag" style="background:${client.logo_color}22;color:${client.logo_color}">${escape(client.name)}</span>` : ''}
         ${mine ? '<span class="tag" style="background:var(--primary-soft);color:var(--primary)">Moi</span>' : ''}
       </div>
       <div class="kanban-card-meta">
@@ -131,6 +135,7 @@ function taskCard(t, projectMap, teamMap, user) {
 async function openTaskForm(content, task, user) {
   const { data: projects } = await supabase.from('projects').select('id,name')
   const { data: team } = await supabase.from('team_members').select('*')
+  const { data: clients } = await supabase.from('clients').select('id,name').order('name', { ascending: true })
 
   // Pre-select the current user as assignee for new tasks
   let defaultAssignee = task.assignee || ''
@@ -152,10 +157,13 @@ async function openTaskForm(content, task, user) {
         </select></div>
       </div>
       <div class="form-row">
+        <div class="field"><label>Client</label><select id="f-client"><option value="">—</option>${(clients || []).map((c) => `<option value="${c.id}" ${task.client_id === c.id ? 'selected' : ''}>${escape(c.name)}</option>`).join('')}</select></div>
         <div class="field"><label>Projet</label><select id="f-project"><option value="">—</option>${(projects || []).map((p) => `<option value="${p.id}" ${task.project_id === p.id ? 'selected' : ''}>${escape(p.name)}</option>`).join('')}</select></div>
-        <div class="field"><label>Responsable</label><select id="f-assignee"><option value="">—</option>${(team || []).map((m) => `<option value="${m.first_name} ${m.last_name}" ${defaultAssignee === `${m.first_name} ${m.last_name}` ? 'selected' : ''}>${escape(m.first_name)} ${escape(m.last_name)}</option>`).join('')}</select></div>
       </div>
-      <div class="field"><label>Date limite</label><input type="date" id="f-due" value="${task.due_date || ''}"></div>`
+      <div class="form-row">
+        <div class="field"><label>Responsable</label><select id="f-assignee"><option value="">—</option>${(team || []).map((m) => `<option value="${m.first_name} ${m.last_name}" ${defaultAssignee === `${m.first_name} ${m.last_name}` ? 'selected' : ''}>${escape(m.first_name)} ${escape(m.last_name)}</option>`).join('')}</select></div>
+        <div class="field"><label>Date limite</label><input type="date" id="f-due" value="${task.due_date || ''}"></div>
+      </div>`
   }, async () => {
     const payload = {
       title: document.getElementById('f-title').value.trim(),
@@ -163,6 +171,7 @@ async function openTaskForm(content, task, user) {
       status: document.getElementById('f-status').value,
       priority: document.getElementById('f-priority').value,
       project_id: document.getElementById('f-project').value || null,
+      client_id: document.getElementById('f-client').value || null,
       assignee: document.getElementById('f-assignee').value,
       due_date: document.getElementById('f-due').value || null,
     }
