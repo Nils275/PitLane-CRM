@@ -6,13 +6,28 @@ const corsHeaders = {
   "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Client-Info, Apikey",
 };
 
+// French-language feeds covering motorsport in general, with emphasis on amateur / grassroots racing
 const FEEDS = [
-  "https://www.autosport.com/rss/feed/f1",
-  "https://www.autosport.com/rss/feed/all",
-  "https://www.motorsport.com/rss/f1/news.xml",
-  "https://www.motorsport.com/rss/all/news.xml",
-  "https://www.gpblog.com/rss.xml",
-  "https://www.racefans.net/feed/",
+  // French motorsport outlets
+  "https://www.autohebdo.fr/feed",
+  "https://www.lematin.ch/moteur/rss.xml",
+  // Motorsport.com French edition (all categories)
+  "https://fr.motorsport.com/rss/all/news.xml",
+  // Autohebdo / FFSA — French motorsport federation news
+  "https://www.ffsa.org/rss",
+  // Endurance-info (amateur endurance racing focus)
+  "https://www.endurance-info.com/rss.xml",
+  // Rallye-magazine (French rally, amateur-heavy)
+  "https://www.rallye-magazine.fr/feed",
+  // Karting (amateur-heavy discipline)
+  "https://fr.motorsport.com/rss/karting/news.xml",
+  // Touring / GT / club racing
+  "https://fr.motorsport.com/rss/gt/news.xml",
+  "https://fr.motorsport.com/rss/touring/news.xml",
+  // General French auto sport news
+  "https://fr.motorsport.com/rss/all/news.xml",
+  // F1 in French (still relevant, but not the focus)
+  "https://fr.motorsport.com/rss/f1/news.xml",
 ];
 
 interface FeedItem {
@@ -34,6 +49,12 @@ function stripHtml(s: string): string {
     .replace(/&#39;/g, "'")
     .replace(/&lt;/g, "<")
     .replace(/&gt;/g, ">")
+    .replace(/&eacute;/g, "é")
+    .replace(/&egrave;/g, "è")
+    .replace(/&agrave;/g, "à")
+    .replace(/&ccedil;/g, "ç")
+    .replace(/&uuml;/g, "ü")
+    .replace(/&ocirc;/g, "ô")
     .trim();
 }
 
@@ -83,7 +104,7 @@ Deno.serve(async (req: Request) => {
         });
         if (!res.ok) continue;
         const xml = await res.text();
-        const src = new URL(url).hostname.replace("www.", "");
+        const src = new URL(url).hostname.replace("www.", "").replace("fr.", "");
         all.push(...extractItems(xml, src));
       } catch {
         // skip failing feed
