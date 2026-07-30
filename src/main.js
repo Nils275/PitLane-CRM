@@ -7,6 +7,7 @@ import { renderTasks } from './views/tasks.js'
 import { renderProjects } from './views/projects.js'
 import { renderTeam } from './views/team.js'
 import { renderCRM } from './views/crm.js'
+import { renderClients } from './views/clients.js'
 import { renderChat } from './views/chat.js'
 import { renderFinance } from './views/finance.js'
 import { renderSettings } from './views/settings.js'
@@ -26,6 +27,7 @@ const NAV = [
     { id: 'agenda', label: 'Agenda', icon: Icon.calendar(18) },
   ]},
   { section: 'Business', items: [
+    { id: 'clients', label: 'Clients', icon: Icon.users(18) },
     { id: 'crm', label: 'CRM', icon: Icon.crm(18) },
     { id: 'finance', label: 'Finance', icon: Icon.finance(18) },
   ]},
@@ -51,6 +53,7 @@ const VIEWS = {
   tasks: renderTasks,
   projects: renderProjects,
   agenda: renderAgenda,
+  clients: renderClients,
   crm: renderCRM,
   finance: renderFinance,
   team: renderTeam,
@@ -174,6 +177,9 @@ async function boot() {
 
   // Jarvis chatbot
   initJarvis()
+
+  // Refresh current view when JARVIS performs an action
+  window.addEventListener('jarvis-action', () => render(getRoute()))
 }
 
 function closeSidebar() {
@@ -211,13 +217,15 @@ function setupSearch() {
 }
 
 async function doSearch(q, resultsEl) {
-  const [tasks, projects, team, deals] = await Promise.all([
+  const [tasks, projects, team, deals, clients] = await Promise.all([
     supabase.from('tasks').select('id,title').ilike('title', `%${q}%`),
     supabase.from('projects').select('id,name').ilike('name', `%${q}%`),
     supabase.from('team_members').select('id,first_name,last_name').or(`first_name.ilike.%${q}%,last_name.ilike.%${q}%`),
     supabase.from('crm_deals').select('id,company').ilike('company', `%${q}%`),
+    supabase.from('clients').select('id,name').ilike('name', `%${q}%`),
   ])
   const groups = [
+    { title: 'Clients', items: (clients.data || []).map((c) => ({ id: c.id, label: c.name, route: 'clients' })) },
     { title: 'Tâches', items: (tasks.data || []).map((t) => ({ id: t.id, label: t.title, route: 'tasks' })) },
     { title: 'Projets', items: (projects.data || []).map((p) => ({ id: p.id, label: p.name, route: 'projects' })) },
     { title: 'Équipe', items: (team.data || []).map((m) => ({ id: m.id, label: `${m.first_name} ${m.last_name}`, route: 'team' })) },

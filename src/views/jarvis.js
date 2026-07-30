@@ -33,9 +33,9 @@ export function initJarvis() {
       </div>
     </div>
     <div class="jarvis-suggestions" id="jarvis-suggestions">
-      <button class="jarvis-chip" data-q="Quelles sont les dernières actus F1 ?">Actus F1</button>
-      <button class="jarvis-chip" data-q="Comment ajouter une tâche ?">Ajouter une tâche</button>
-      <button class="jarvis-chip" data-q="Quels sont mes projets en cours ?">Mes projets</button>
+      <button class="jarvis-chip" data-q="Crée le client Oups-Club">Créer client</button>
+      <button class="jarvis-chip" data-q="Crée une tâche: maquette post Instagram pour Oups-Club, assignée à Julien, pour le 31 août">Créer tâche</button>
+      <button class="jarvis-chip" data-q="Montre-moi mes tâches">Mes tâches</button>
     </div>
     <div class="jarvis-input-row">
       <input id="jarvis-input" placeholder="Posez votre question à JARVIS..." autocomplete="off">
@@ -103,13 +103,20 @@ async function send() {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}`,
       },
-      body: JSON.stringify({ messages, search: true }),
+      body: JSON.stringify({ messages }),
     })
     const json = await res.json()
     removeTyping()
     const reply = json.reply || json.error || "Désolé, je n'ai pas pu répondre."
     addMsg('assistant', reply)
     messages.push({ role: 'assistant', content: reply })
+    // If JARVIS performed an action, refresh the current page data after a short delay
+    if (/cr[ée]e|ajout/i.test(reply)) {
+      setTimeout(() => {
+        const event = new CustomEvent('jarvis-action')
+        window.dispatchEvent(event)
+      }, 500)
+    }
   } catch (e) {
     removeTyping()
     addMsg('assistant', 'Désolé, une erreur est survenue. Réessayez dans un instant.')

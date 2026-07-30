@@ -1,4 +1,5 @@
 import { createClient } from "npm:@supabase/supabase-js@2.45.4";
+// JARVIS autonomous assistant v2
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -6,173 +7,228 @@ const corsHeaders = {
   "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Client-Info, Apikey",
 };
 
-interface Message {
-  role: "system" | "user" | "assistant";
-  content: string;
-}
-
-interface ChatRequest {
-  messages: Message[];
-  search?: boolean;
-}
-
 Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") {
     return new Response(null, { status: 200, headers: corsHeaders });
   }
 
   try {
-    const { messages, search } = (await req.json()) as ChatRequest;
-
-    // Gather context: recent news from press_articles table
+    const body = await req.json();
+    const messages = body.messages || [];
     const supabase = createClient(
       Deno.env.get("SUPABASE_URL")!,
       Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!
     );
 
-    let contextText = "";
-    try {
-      const { data: recentNews } = await supabase
-        .from("press_articles")
-        .select("title,summary,source,published_at,url")
-        .order("published_at", { ascending: false })
-        .limit(8);
-      if (recentNews && recentNews.length) {
-        contextText = "\n\nActualité sport automobile récente:\n" +
-          recentNews.map((n: any) => `- ${n.title} (${n.source}, ${new Date(n.published_at).toLocaleDateString("fr-FR")})`).join("\n");
-      }
-    } catch {
-      // ignore
-    }
+    const lastUserMsg = messages.filter((m: any) => m.role === "user").pop();
+    const query = (lastUserMsg?.content || "").toLowerCase();
 
-    // Try to use an LLM API if a key is configured, otherwise use a smart fallback.
-    const openaiKey = Deno.env.get("OPENAI_API_KEY");
-    const anthropicKey = Deno.env.get("ANTHROPIC_API_KEY");
-    const geminiKey = Deno.env.get("GEMINI_API_KEY");
+    const actionResult = await tryAction(query, supabase);
 
-    let assistantReply = "";
-
-    const systemPrompt = `Tu es JARVIS, un assistant IA intégré dans une plateforme de gestion d'entreprise spécialisée dans le sport automobile. Tu réponds en français, de manière concise et utile. Tu aides l'équipe avec des questions sur leurs projets, tâches, communication, et l'actualité du sport automobile. Tu es cordial et professionnel.${contextText}`;
-
-    if (openaiKey) {
-      assistantReply = await callOpenAI(openaiKey, systemPrompt, messages);
-    } else if (anthropicKey) {
-      assistantReply = await callAnthropic(anthropicKey, systemPrompt, messages);
-    } else if (geminiKey) {
-      assistantReply = await callGemini(geminiKey, systemPrompt, messages);
+    let reply = "";
+    if (actionResult) {
+      reply = actionResult;
     } else {
-      // No LLM key configured — use a helpful fallback that can still answer basic questions
-      assistantReply = fallbackReply(messages, contextText);
+      let contextText = "";
+      try {
+        const newsRes = await supabase
+          .from("press_articles")
+          .select("title,source,published_at")
+          .order("published_at", { ascending: false })
+          .limit(8);
+        if (newsRes.data && newsRes.data.length) {
+          contextText = newsRes.data.map((n: any) => "- " + n.title + " (" + n.source + ")").join("\n");
+        }
+      } catch (e) {}
+      reply = fallbackReply(messages, contextText);
     }
 
     return new Response(
-      JSON.stringify({ reply: assistantReply, source: openaiKey ? "openai" : anthropicKey ? "anthropic" : geminiKey ? "gemini" : "fallback" }),
+      JSON.stringify({ reply }),
       { headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );
   } catch (err) {
     return new Response(
-      JSON.stringify({ error: err.message, reply: "Désolé, une erreur est survenue. Réessayez dans un instant." }),
+      JSON.stringify({ error: err.message, reply: "Désolé, une erreur est survenue." }),
       { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );
   }
 });
 
-async function callOpenAI(key: string, system: string, messages: Message[]): Promise<string> {
-  const res = await fetch("https://api.openai.com/v1/chat/completions", {
-    method: "POST",
-    headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
-    body: JSON.stringify({
-      model: "gpt-4o-mini",
-      messages: [{ role: "system", content: system }, ...messages],
-      temperature: 0.7,
-      max_tokens: 800,
-    }),
-    signal: AbortSignal.timeout(25000),
-  });
-  if (!res.ok) throw new Error(`OpenAI error: ${res.status}`);
-  const json = await res.json();
-  return json.choices?.[0]?.message?.content || "Je n'ai pas pu générer de réponse.";
-}
+async function tryAction(query: string, supabase: any): Promise<string | null> {
+  const clientMatch = query.match(/(?:ajoute|cr[ée]e|nouveau|ajouter)\s+(?:le\s+)?(?:client|compte)\s+(.+)/i);
+  if (clientMatch) return await createClient(supabase, clientMatch[1].trim());
 
-async function callAnthropic(key: string, system: string, messages: Message[]): Promise<string> {
-  const res = await fetch("https://api.anthropic.com/v1/messages", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "x-api-key": key,
-      "anthropic-version": "2023-06-01",
-    },
-    body: JSON.stringify({
-      model: "claude-3-5-haiku-20241022",
-      system,
-      max_tokens: 800,
-      messages: messages.map((m) => ({ role: m.role === "assistant" ? "assistant" : "user", content: m.content })),
-    }),
-    signal: AbortSignal.timeout(25000),
-  });
-  if (!res.ok) throw new Error(`Anthropic error: ${res.status}`);
-  const json = await res.json();
-  return json.content?.[0]?.text || "Je n'ai pas pu générer de réponse.";
-}
-
-async function callGemini(key: string, system: string, messages: Message[]): Promise<string> {
-  const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${key}`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      system_instruction: { parts: [{ text: system }] },
-      contents: messages.map((m) => ({
-        role: m.role === "assistant" ? "model" : "user",
-        parts: [{ text: m.content }],
-      })),
-      generationConfig: { temperature: 0.7, maxOutputTokens: 800 },
-    }),
-    signal: AbortSignal.timeout(25000),
-  });
-  if (!res.ok) throw new Error(`Gemini error: ${res.status}`);
-  const json = await res.json();
-  return json.candidates?.[0]?.content?.parts?.[0]?.text || "Je n'ai pas pu générer de réponse.";
-}
-
-function fallbackReply(messages: Message[], context: string): string {
-  const last = messages.filter((m) => m.role === "user").pop();
-  const q = (last?.content || "").toLowerCase();
-
-  if (!q) return "Bonjour, je suis JARVIS. Comment puis-je vous aider ?";
-
-  if (/bonjour|salut|coucou|hello|hey/.test(q)) {
-    return "Bonjour ! Je suis JARVIS, votre assistant IA. Je peux vous aider avec vos projets, tâches, et l'actualité du sport automobile. Posez-moi une question !";
+  if (/(?:cr[ée]e|ajoute|ajouter|cr[ée]er)\s+(?:moi\s+)?(?:une\s+)?(?:la\s+)?t[âa]che/i.test(query) || /t[âa]che\s*:/i.test(query)) {
+    return await createTask(query, supabase);
   }
-  if (/actualité|news|sport auto|formule 1|f1|résultat|grand prix|course/.test(q)) {
-    if (context) {
-      return "Voici les dernières actualités du sport automobile :\n" + context.replace("\n\nActualité sport automobile récente:\n", "");
+
+  const projectMatch = query.match(/(?:cr[ée]e|ajoute|nouveau)\s+(?:le\s+)?projet\s+(.+)/i);
+  if (projectMatch) return await createProject(supabase, projectMatch[1].trim());
+
+  if (/(?:liste|affiche|montre|quelles sont)\s+(?:les\s+)?t[âa]ches/i.test(query) || /mes t[âa]ches/i.test(query)) {
+    return await listTasks(supabase);
+  }
+
+  if (/(?:liste|affiche|montre|quels sont)\s+(?:les\s+)?clients/i.test(query)) {
+    return await listClients(supabase);
+  }
+
+  return null;
+}
+
+async function createClient(supabase: any, name: string): Promise<string> {
+  name = name.replace(/[.,;:!?]+$/, "").trim();
+  const parts = name.split(",");
+  const clientName = parts[0].trim();
+  const company = (parts[1] || "").trim();
+
+  const existingRes = await supabase.from("clients").select("id").ilike("name", clientName).maybeSingle();
+  if (existingRes.data) return 'Le client "' + clientName + '" existe déjà.';
+
+  const colors = ["#2563eb", "#dc2626", "#16a34a", "#9333ea", "#ea580c", "#0891b2", "#ca8a04"];
+  const insRes = await supabase.from("clients").insert({
+    name: clientName, company, logo_color: colors[Math.floor(Math.random() * colors.length)], status: "active",
+  }).select().single();
+
+  if (insRes.error) return "Erreur: " + insRes.error.message;
+  let r = "Client créé avec succès !\n\nNom: " + clientName;
+  if (company) r += "\nEntreprise: " + company;
+  r += "\nStatut: Actif";
+  return r;
+}
+
+async function createTask(query: string, supabase: any): Promise<string> {
+  let title = "";
+  const colonMatch = query.match(/t[âa]che\s*:\s*(.+)/i);
+  if (colonMatch) {
+    title = colonMatch[1].trim();
+  } else {
+    const afterTask = query.match(/t[âa]che(?:\s+(?:pour|à|au|d[ue]\s+))?\s+(.+)/i);
+    title = afterTask ? afterTask[1].trim() : "Nouvelle tâche";
+  }
+  title = title.split(/\s+(?:pour|à|au|d[ue]\s+|par|avant|pour le)\s+/i)[0].trim();
+  title = title.replace(/[.,;:!?]+$/, "").trim();
+
+  const teamRes = await supabase.from("team_members").select("*");
+  let assignee = "";
+  if (teamRes.data) {
+    for (const m of teamRes.data) {
+      if (query.includes(m.first_name.toLowerCase()) || query.includes((m.first_name + " " + m.last_name).toLowerCase())) {
+        assignee = m.first_name + " " + m.last_name;
+        break;
+      }
     }
-    return "Pour consulter l'actualité du sport automobile en temps réel, rendez-vous dans la section 'Presse Sport Auto' du menu. Vous pouvez cliquer sur 'Actualiser' pour récupérer les derniers articles.";
   }
-  if (/projet|tâche|task/.test(q)) {
-    return "Vous pouvez gérer vos projets et tâches depuis les sections dédiées dans le menu latéral. Créez un projet, ajoutez des tâches avec dates d'échéance, et elles apparaîtront automatiquement dans l'agenda.";
-  }
-  if (/document|fichier|doc/.test(q)) {
-    return "La section Documents vous permet d'organiser vos fichiers par projet. Vous pouvez ajouter des documents avec leur lien, les verrouiller, et les retrouver facilement.";
-  }
-  if (/communication|contact|email|message/.test(q)) {
-    return "La section Communication vous permet de suivre tous vos échanges (emails, appels, réunions) avec clients et partenaires, par canal et par projet.";
-  }
-  if (/template|canva|photoshop|design/.test(q)) {
-    return "La section Templates vous donne un accès rapide à Canva, Photoshop, Figma et autres outils de création. Cliquez sur un template pour ouvrir l'outil correspondant.";
-  }
-  if (/agenda|calendrier|rendez-vous|évènement/.test(q)) {
-    return "L'agenda affiche vos évènements et vos tâches automatiquement. Utilisez les vues Jour, Semaine ou Mois selon vos besoins.";
-  }
-  if (/merci|thanks|thank/.test(q)) {
-    return "Avec plaisir ! N'hésitez pas si vous avez d'autres questions.";
-  }
-  if (/qui es.tu|ton nom|jarvis|présente/.test(q)) {
-    return "Je suis JARVIS, l'assistant IA intégré à votre plateforme de gestion. Je peux répondre à vos questions sur vos projets, l'actualité du sport automobile, et vous guider dans l'utilisation de l'application.";
-  }
-  if (/aide|help|comment/.test(q)) {
-    return "Je peux vous aider à :\n• Naviguer dans la plateforme (projets, tâches, agenda, documents, communication)\n• Consulter l'actualité du sport automobile\n• Comprendre le fonctionnement de chaque section\nPosez-moi votre question !";
+  if (!assignee) {
+    const usersRes = await supabase.from("app_users").select("*");
+    if (usersRes.data) {
+      for (const u of usersRes.data) {
+        if (query.includes(u.name.toLowerCase())) {
+          const tm = (teamRes.data || []).find((m: any) => m.first_name.toLowerCase() === u.name.toLowerCase());
+          assignee = tm ? (tm.first_name + " " + tm.last_name) : u.name;
+          break;
+        }
+      }
+    }
   }
 
-  return "Je n'ai pas de clé API IA configurée pour le moment, donc mes réponses sont limitées. Pour activer l'IA complète (réponses intelligentes et recherche web), ajoutez une clé OpenAI, Anthropic ou Gemini dans les secrets Supabase. En attendant, je peux vous guider dans l'utilisation de la plateforme.";
+  let dueDate: string | null = null;
+  const months: Record<string, string> = {
+    "janvier": "01", "février": "02", "fevrier": "02", "mars": "03", "avril": "04",
+    "mai": "05", "juin": "06", "juillet": "07", "août": "08", "aout": "08",
+    "septembre": "09", "octobre": "10", "novembre": "11", "décembre": "12", "decembre": "12",
+  };
+  const dayMatch = query.match(/(?:avant|pour le|pour|deadline)\s+(\d{1,2})\s*([a-zéûôà]+)/i);
+  const dateMatch = query.match(/(\d{1,2})\s*([a-zéûôà]+)\s*(\d{4})?/i);
+  let day: string | null = null, month: string | null = null, year: string | null = null;
+  if (dayMatch) {
+    day = dayMatch[1].padStart(2, "0");
+    month = months[dayMatch[2].toLowerCase()] || null;
+  } else if (dateMatch) {
+    day = dateMatch[1].padStart(2, "0");
+    month = months[dateMatch[2].toLowerCase()] || null;
+    if (dateMatch[3]) year = dateMatch[3];
+  }
+  if (day && month) {
+    if (!year) {
+      const now = new Date();
+      year = String(now.getFullYear());
+      if (new Date(year + "-" + month + "-" + day) < now) year = String(now.getFullYear() + 1);
+    }
+    dueDate = year + "-" + month + "-" + day;
+  }
+
+  let clientId: string | null = null, clientName = "";
+  const clientsRes = await supabase.from("clients").select("*");
+  if (clientsRes.data) {
+    for (const c of clientsRes.data) {
+      if (query.includes(c.name.toLowerCase())) { clientId = c.id; clientName = c.name; break; }
+    }
+  }
+
+  let priority = "medium";
+  if (/priorit[ée]\s*(?:haute|élevée|high)/i.test(query) || /urgent/i.test(query)) priority = "high";
+  else if (/priorit[ée]\s*(?:basse|low)/i.test(query)) priority = "low";
+
+  const payload: any = { title, status: "todo", priority, assignee: assignee || "", due_date: dueDate, client_id: clientId };
+  if (clientId) {
+    const projRes = await supabase.from("projects").select("id").eq("client_id", clientId).maybeSingle();
+    if (projRes.data) payload.project_id = projRes.data.id;
+  }
+
+  const insRes = await supabase.from("tasks").insert(payload).select().single();
+  if (insRes.error) return "Erreur: " + insRes.error.message;
+
+  let r = "Tâche créée avec succès !\n\nTitre: " + title + "\n";
+  r += "Priorité: " + (priority === "high" ? "Haute" : priority === "low" ? "Basse" : "Moyenne") + "\n";
+  if (assignee) r += "Assignée à: " + assignee + "\n";
+  if (dueDate) r += "Date limite: " + new Date(dueDate).toLocaleDateString("fr-FR", { weekday: "long", day: "numeric", month: "long", year: "numeric" }) + "\n";
+  if (clientName) r += "Client: " + clientName + "\n";
+  r += "\nLa tâche est dans le tableau Kanban et l'agenda a été mis à jour.";
+  return r;
+}
+
+async function createProject(supabase: any, name: string): Promise<string> {
+  name = name.replace(/[.,;:!?]+$/, "").trim();
+  const colors = ["#2563eb", "#dc2626", "#16a34a", "#9333ea", "#ea580c", "#0891b2"];
+  const res = await supabase.from("projects").insert({ name, status: "planning", color: colors[Math.floor(Math.random() * colors.length)] }).select().single();
+  if (res.error) return "Erreur: " + res.error.message;
+  return 'Projet "' + name + '" créé avec succès !';
+}
+
+async function listTasks(supabase: any): Promise<string> {
+  const res = await supabase.from("tasks").select("*").order("created_at", { ascending: false }).limit(15);
+  if (!res.data || !res.data.length) return "Aucune tâche pour le moment.";
+  let r = "Voici les " + res.data.length + " tâches les plus récentes:\n\n";
+  for (const t of res.data) {
+    const st = t.status === "todo" ? "À faire" : t.status === "doing" ? "En cours" : t.status === "review" ? "Revue" : "Terminé";
+    r += "• " + t.title + " [" + st + "]";
+    if (t.assignee) r += " — " + t.assignee;
+    if (t.due_date) r += " — " + new Date(t.due_date).toLocaleDateString("fr-FR");
+    r += "\n";
+  }
+  return r;
+}
+
+async function listClients(supabase: any): Promise<string> {
+  const res = await supabase.from("clients").select("*").order("created_at", { ascending: false });
+  if (!res.data || !res.data.length) return "Aucun client enregistré.";
+  let r = "Voici les " + res.data.length + " client(s):\n\n";
+  for (const c of res.data) r += "• " + c.name + (c.company ? " (" + c.company + ")" : "") + " — " + (c.status === "active" ? "Actif" : "Inactif") + "\n";
+  return r;
+}
+
+function fallbackReply(messages: any[], context: string): string {
+  const last = messages.filter((m: any) => m.role === "user").pop();
+  const q = (last?.content || "").toLowerCase();
+  if (!q) return "Bonjour, je suis JARVIS. Comment puis-je vous aider ?";
+  if (/bonjour|salut|coucou|hello|hey/.test(q))
+    return "Bonjour ! Je suis JARVIS, votre assistant IA autonome. Je peux créer des clients, des tâches, des projets et les assigner. Essayez: \"Crée le client Oups-Club\" ou \"Crée une tâche: maquette Instagram pour Oups-Club, Julien, 31 août\".";
+  if (/qui es.tu|ton nom|jarvis|présente/.test(q))
+    return "Je suis JARVIS, votre assistant IA autonome. Je peux:\n• Créer des clients\n• Créer des tâches avec assignation et date\n• Créer des projets\n• Lister les tâches et clients";
+  if (/aide|help|comment|que peux.tu/.test(q))
+    return "Voici ce que je peux faire:\n\n1. \"ajoute le client Oups-Club\"\n2. \"crée une tâche: maquette Instagram pour Oups-Club, Julien, 31 août\"\n3. \"crée le projet Campagne F1\"\n4. \"montre-moi les tâches\"\n5. \"quels sont nos clients ?\"";
+  if (/merci|thanks|thank/.test(q)) return "Avec plaisir !";
+  return "Je suis autonome pour les actions ! Essayez:\n• \"Crée le client Oups-Club\"\n• \"Crée une tâche: maquette Instagram pour Oups-Club, Julien, 31 août\"\n• \"Montre-moi les tâches\"";
 }
