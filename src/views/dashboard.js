@@ -5,21 +5,28 @@ import { getCurrentUser } from './login.js'
 
 const fmt = (n) => new Intl.NumberFormat('fr-FR', { style: 'currency', currency: 'EUR', maximumFractionDigits: 0 }).format(n || 0)
 
+function isThisMonth(d, now) {
+  const dt = new Date(d)
+  return dt.getFullYear() === now.getFullYear() && dt.getMonth() === now.getMonth()
+}
+
 export async function renderDashboard(content) {
   content.innerHTML = `<div class="spinner"></div>`
 
-  const [tasks, projects, deals, tx, team] = await Promise.all([
+  const [tasks, projects, deals, tx, team, forecasts] = await Promise.all([
     supabase.from('tasks').select('*'),
     supabase.from('projects').select('*'),
     supabase.from('crm_deals').select('*'),
     supabase.from('transactions').select('*'),
     supabase.from('team_members').select('*'),
+    supabase.from('financial_forecasts').select('*'),
   ])
 
   const t = tasks.data || []
   const p = projects.data || []
   const d = deals.data || []
   const x = tx.data || []
+  const fc = forecasts.data || []
   const user = getCurrentUser()
 
   const myTasks = user ? t.filter((k) => (k.assignee || '').toLowerCase().startsWith(user.name.toLowerCase())) : []
@@ -36,6 +43,12 @@ export async function renderDashboard(content) {
   const profit = income - expense
   const signed = d.filter((k) => k.stage === 'signed').reduce((s, k) => s + Number(k.value), 0)
   const pipelineVal = d.filter((k) => k.stage !== 'signed' && k.stage !== 'lost').reduce((s, k) => s + Number(k.value), 0)
+
+  // forecast for current month
+  const fcNow = new Date()
+  const fcIncome = fc.filter((f) => f.type === 'income' && (isThisMonth(f.month, fcNow) || f.recurring)).reduce((s, f) => s + Number(f.amount), 0)
+  const fcExpense = fc.filter((f) => f.type === 'expense' && (isThisMonth(f.month, fcNow) || f.recurring)).reduce((s, f) => s + Number(f.amount), 0)
+  const fcProfit = fcIncome - fcExpense
 
   // monthly bars (last 6 months)
   const months = []
@@ -72,11 +85,51 @@ export async function renderDashboard(content) {
     </div>
 
     <div class="grid grid-4" style="margin-bottom:18px">
-      ${kpiCard('Chiffre d\'affaires', fmt(income), '+12%', 'up', Icon.dollar(18), 'tint-success')}
-      ${kpiCard('Bénéfice', fmt(profit), profit >= 0 ? '+' + Math.round(profit / (income || 1) * 100) + '%' : '—', profit >= 0 ? 'up' : 'down', Icon.trend(18), 'tint-primary')}
+      ${kpiCard('Chiffre d\'affaires', fmt(income), fcIncome ? `Prévu: ${fmt(fcIncome)}` : '+12%', fcIncome ? (income >= fcIncome ? 'up' : 'down') : 'up', Icon.dollar(18), 'tint-success')}
+      ${kpiCard('Bénéfice', fmt(profit), fcProfit ? `Prévu: ${fmt(fcProfit)}` : (profit >= 0 ? '+' + Math.round(profit / (income || 1) * 100) + '%' : '—'), fcProfit ? (profit >= fcProfit ? 'up' : 'down') : (profit >= 0 ? 'up' : 'down'), Icon.trend(18), 'tint-primary')}
       ${kpiCard('Tâches actives', inprog + todo, `${done} terminées`, 'up', Icon.tasks(18), 'tint-warning')}
       ${kpiCard('Pipeline', fmt(pipelineVal), `${d.length} opportunités`, 'up', Icon.crm(18), 'tint-accent')}
     </div>
+
+    ${fc.length ? `
+    <div class="card" style="margin-bottom:18px">
+      <div class="card-head"><div class="card-title">Prévisionnel vs Réel — ${fcNow.toLocaleDateString('fr-FR', { month: 'long', year: 'numeric' })}</div><span class="badge badge-primary">${fc.length} prévisions</span></div>
+      <div class="card-pad">
+        <div class="forecast-compare">
+          <div class="forecast-row">
+            <div class="forecast-label">Revenus prévus</div>
+            <div class="forecast-bar"><div style="width:${(fcIncome / Math.max(fcIncome, income, 1)) * 100}%;background:#60a5fa"></div></div>
+            <div class="forecast-val" style="color:#2563eb">${fmt(fcIncome)}</div>
+          </div>
+          <div class="forecast-row">
+            <div class="forecast-label">Revenus réels</div>
+            <div class="forecast-bar"><div style="width:${(income / Math.max(fcIncome, income, 1)) * 100}%;background:#2563eb"></div></div>
+            <div class="forecast-val" style="color:#2563eb">${fmt(income)}</div>
+          </div>
+          <div class="forecast-row">
+            <div class="forecast-label">Dépenses prévues</div>
+            <div class="forecast-bar"><div style="width:${(fcExpense / Math.max(fcExpense, expense, 1)) * 100}%;background:#f87171"></div></div>
+            <div class="forecast-val" style="color:#dc2626">${fmt(fcExpense)}</div>
+          </div>
+          <div class="forecast-row">
+            <div class="forecast-label">Dépenses réelles</div>
+            <div class="forecast-bar"><div style="width:${(expense / Math.max(fcExpense, expense, 1)) * 100}%;background:#dc2626"></div></div>
+            <div class="forecast-val" style="color:#dc2626">${fmt(expense)}</div>
+          </div>
+          <div class="forecast-divider"></div>
+          <div class="forecast-row">
+            <div class="forecast-label">Résultat prévu</div>
+            <div class="forecast-bar"><div style="width:${Math.abs(fcProfit) / Math.max(Math.abs(fcProfit), Math.abs(profit), 1) * 100}%;background:${fcProfit >= 0 ? '#60a5fa' : '#f87171'}"></div></div>
+            <div class="forecast-val" style="color:${fcProfit >= 0 ? '#2563eb' : '#dc2626'}">${fmt(fcProfit)}</div>
+          </div>
+          <div class="forecast-row">
+            <div class="forecast-label">Résultat réel</div>
+            <div class="forecast-bar"><div style="width:${Math.abs(profit) / Math.max(Math.abs(fcProfit), Math.abs(profit), 1) * 100}%;background:${profit >= 0 ? '#2563eb' : '#dc2626'}"></div></div>
+            <div class="forecast-val" style="color:${profit >= 0 ? '#2563eb' : '#dc2626'}">${fmt(profit)}</div>
+          </div>
+        </div>
+      </div>
+    </div>` : ''}
 
     <div class="grid grid-2" style="margin-bottom:18px">
       <div class="card">
